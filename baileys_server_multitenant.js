@@ -30,7 +30,7 @@ const app = express();
 // Configurações do ambiente
 const PORT = process.env.PORT || 3000;
 const FLASK_APP_URL = process.env.NODE_ENV === 'production' 
-    ? process.env.FLASK_APP_URL_PRODUCTION 
+    ? (process.env.FLASK_APP_URL_PRODUCTION || process.env.FLASK_APP_URL)
     : process.env.FLASK_APP_URL || 'http://localhost:5000';
 
 // Configurar CORS - PERMITIR TODAS AS ORIGENS EM DESENVOLVIMENTO
