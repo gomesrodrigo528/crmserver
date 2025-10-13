@@ -1,0 +1,24 @@
+# Configuração para deploy no Render
+# Este arquivo define como o Render deve construir e executar sua aplicação
+
+services:
+  - type: web
+    name: whatsapp-api
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FLASK_APP_URL
+        value: https://www.suaagenda.fun
+      - key: WHATSAPP_API_URL_PRODUCTION
+        value: https://api.suaagenda.fun
+    # Configurações de disco para armazenar sessões WhatsApp
+    disk:
+      name: whatsapp-sessions
+      mountPath: /opt/render/project/src/auth_info
+      sizeGB: 1
