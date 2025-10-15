@@ -82,6 +82,8 @@ const UPLOAD_DIR = path.join(__dirname, 'static/uploads/whatsapp');
 // Estado da conexão por empresa
 let connections = new Map();
 let qrCodes = new Map(); // Armazena QR Codes por empresa
+let reconnectAttempts = new Map(); // Contador de tentativas de reconexão
+let reconnectTimeouts = new Map(); // Timeouts de reconexão
 
 /**
  * Proteger diretório de autenticação
@@ -196,6 +198,9 @@ async function connectToWhatsApp(empresaId) {
         // Armazena a conexão no Map
         connections.set(empresaId, sock);
         console.log(`📝 Conexão armazenada para empresa ${empresaId}`);
+        
+        // Reset contador de tentativas quando conexão é criada
+        reconnectAttempts.set(empresaId, 0);
 
         // Salva credenciais quando atualizadas
         sock.ev.on('creds.update', saveCreds);
@@ -230,7 +235,33 @@ async function connectToWhatsApp(empresaId) {
                 console.log(`❌ Conexão fechada para empresa ${empresaId}, reconectando:`, shouldReconnect);
                 
                 if (shouldReconnect) {
-                    setTimeout(() => connectToWhatsApp(empresaId), 5000);
+                    // Verificar se não há socket ativo antes de reconectar
+                    if (!connections.has(empresaId)) {
+                        const attempts = reconnectAttempts.get(empresaId) || 0;
+                        
+                        if (attempts < 5) {
+                            reconnectAttempts.set(empresaId, attempts + 1);
+                            console.log(`🔁 Tentativa de reconexão ${attempts + 1}/5 para empresa ${empresaId} - ${new Date().toISOString()}`);
+                            
+                            // Limpar timeout anterior se existir
+                            if (reconnectTimeouts.has(empresaId)) {
+                                clearTimeout(reconnectTimeouts.get(empresaId));
+                            }
+                            
+                            // Agendar reconexão com delay
+                            const timeoutId = setTimeout(() => {
+                                console.log(`🚀 Executando reconexão para empresa ${empresaId}`);
+                                connectToWhatsApp(empresaId);
+                                reconnectTimeouts.delete(empresaId);
+                            }, 5000);
+                            
+                            reconnectTimeouts.set(empresaId, timeoutId);
+                        } else {
+                            console.log(`🚫 Empresa ${empresaId} excedeu o limite de tentativas (5), abortando reconexão.`);
+                        }
+                    } else {
+                        console.log(`⚠️ Não reconectando empresa ${empresaId} (socket ainda ativo).`);
+                    }
                 }
                 updateConnectionStatus(empresaId, 'desconectado');
             } else if (connection === 'open') {
@@ -358,8 +389,7 @@ async function connectToWhatsApp(empresaId) {
             }
         });
 
-        // Armazena conexão
-        connections.set(empresaId, sock);
+        // Conexão já foi armazenada acima, não duplicar
         
     } catch (error) {
         console.error(`❌ Erro ao conectar WhatsApp para empresa ${empresaId}:`, error);
@@ -613,13 +643,27 @@ app.post('/connect/:empresaId', async (req, res) => {
         if (connections.has(empresaId)) {
             console.log(`🔄 Desconectando conexão existente para empresa ${empresaId}`);
             const sock = connections.get(empresaId);
+            
+            // Limpar timeout de reconexão se existir
+            if (reconnectTimeouts.has(empresaId)) {
+                clearTimeout(reconnectTimeouts.get(empresaId));
+                reconnectTimeouts.delete(empresaId);
+            }
+            
             try {
+                // Fechar conexão WebSocket primeiro
+                if (sock.ws) {
+                    sock.ws.close();
+                }
+                // Depois fazer logout
                 await sock.logout();
             } catch (e) {
                 console.log(`⚠️ Erro ao desconectar: ${e.message}`);
             }
+            
             connections.delete(empresaId);
             qrCodes.delete(empresaId);
+            reconnectAttempts.delete(empresaId);
             
             // Limpar arquivos de autenticação para forçar novo QR Code
             console.log(`🧹 Limpando arquivos de autenticação para empresa ${empresaId}`);
@@ -654,7 +698,18 @@ app.post('/disconnect/:empresaId', async (req, res) => {
         console.log(`🔌 Desconectando empresa ${empresaId}...`);
         
         if (sock) {
+            // Limpar timeout de reconexão se existir
+            if (reconnectTimeouts.has(empresaId)) {
+                clearTimeout(reconnectTimeouts.get(empresaId));
+                reconnectTimeouts.delete(empresaId);
+            }
+            
             try {
+                // Fechar conexão WebSocket primeiro
+                if (sock.ws) {
+                    sock.ws.close();
+                }
+                // Depois fazer logout
                 await sock.logout();
                 console.log(`✅ Logout realizado para empresa ${empresaId}`);
             } catch (e) {
@@ -663,6 +718,7 @@ app.post('/disconnect/:empresaId', async (req, res) => {
             
             connections.delete(empresaId);
             qrCodes.delete(empresaId);
+            reconnectAttempts.delete(empresaId);
             updateConnectionStatus(empresaId, 'desconectado');
         }
         
@@ -706,9 +762,20 @@ app.post('/clear-all', async (req, res) => {
     try {
         console.log('🧹 Limpando todas as conexões...');
         
+        // Limpar todos os timeouts de reconexão
+        for (const [empresaId, timeoutId] of reconnectTimeouts) {
+            clearTimeout(timeoutId);
+        }
+        reconnectTimeouts.clear();
+        
         // Desconectar todas as conexões
         for (const [empresaId, sock] of connections) {
             try {
+                // Fechar conexão WebSocket primeiro
+                if (sock.ws) {
+                    sock.ws.close();
+                }
+                // Depois fazer logout
                 await sock.logout();
                 console.log(`✅ Desconectado empresa ${empresaId}`);
             } catch (e) {
@@ -719,6 +786,7 @@ app.post('/clear-all', async (req, res) => {
         // Limpar Maps
         connections.clear();
         qrCodes.clear();
+        reconnectAttempts.clear();
         
         // Limpar arquivos de autenticação
         await limparArquivosAuth();
@@ -1006,14 +1074,21 @@ app.get('/qr/:empresaId', (req, res) => {
         console.log(`✅ Empresa ${empresaId} já conectada`);
         res.json({ qr: null, connected: true });
     } else {
-        console.log(`❌ Nenhum QR Code ou conexão para empresa ${empresaId} - iniciando nova conexão`);
-        // Se não há QR nem conexão, iniciar nova conexão
-        connectToWhatsApp(empresaId).then(() => {
-            console.log(`🚀 Nova conexão iniciada para empresa ${empresaId}`);
-        }).catch(err => {
-            console.error(`❌ Erro ao iniciar conexão para empresa ${empresaId}:`, err);
-        });
-        res.json({ qr: null, connected: false, message: 'Iniciando nova conexão...' });
+        console.log(`❌ Nenhum QR Code ou conexão para empresa ${empresaId} - verificando se pode iniciar nova conexão`);
+        
+        // Verificar se não há timeout de reconexão ativo
+        if (!reconnectTimeouts.has(empresaId)) {
+            console.log(`🚀 Iniciando nova conexão para empresa ${empresaId}`);
+            connectToWhatsApp(empresaId).then(() => {
+                console.log(`✅ Nova conexão iniciada para empresa ${empresaId}`);
+            }).catch(err => {
+                console.error(`❌ Erro ao iniciar conexão para empresa ${empresaId}:`, err);
+            });
+            res.json({ qr: null, connected: false, message: 'Iniciando nova conexão...' });
+        } else {
+            console.log(`⏳ Reconexão já agendada para empresa ${empresaId}`);
+            res.json({ qr: null, connected: false, message: 'Reconexão já agendada...' });
+        }
     }
 });
 
@@ -1041,8 +1116,18 @@ app.listen(PORT, () => {
 process.on('SIGINT', async () => {
     console.log('\n🔄 Desconectando todas as empresas...');
     
+    // Limpar todos os timeouts de reconexão
+    for (const [empresaId, timeoutId] of reconnectTimeouts) {
+        clearTimeout(timeoutId);
+    }
+    
     for (const [empresaId, sock] of connections) {
         try {
+            // Fechar conexão WebSocket primeiro
+            if (sock.ws) {
+                sock.ws.close();
+            }
+            // Depois fazer logout
             await sock.logout();
             console.log(`✅ Empresa ${empresaId} desconectada`);
         } catch (error) {

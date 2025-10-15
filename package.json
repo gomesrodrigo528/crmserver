@@ -5,10 +5,10 @@
   "main": "baileys_server_multitenant.js",
   "type": "module",
   "scripts": {
-    "start": "node start.js",
-    "start-baileys": "node baileys_server_multitenant.js",
-    "dev": "node --watch baileys_server_multitenant.js",
-    "render": "node start.js",
+    "start": "node --max-old-space-size=4096 start.js",
+    "start-baileys": "node --max-old-space-size=4096 baileys_server_multitenant.js",
+    "dev": "node --max-old-space-size=4096 --watch baileys_server_multitenant.js",
+    "render": "node --max-old-space-size=4096 start.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

@@ -4,8 +4,16 @@
  * Configura o ambiente e inicia o servidor
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+// Carregar variáveis de ambiente
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 console.log('🚀 Iniciando aplicação WhatsApp API no Render...');
 
@@ -54,4 +62,4 @@ console.log(`🌐 Porta configurada: ${PORT}`);
 
 // Iniciar servidor
 console.log('🎯 Iniciando servidor Baileys...');
-require('./baileys_server_multitenant.js');
+import('./baileys_server_multitenant.js');
