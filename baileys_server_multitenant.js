@@ -284,30 +284,38 @@ async function connectToWhatsApp(empresaId) {
             }
         });
 
-        // Timeout para forçar geração de QR Code se não aparecer em 5 segundos
+        // Timeout para forçar geração de QR Code se não aparecer em 15 segundos (aumentado de 5s para 15s para dar mais tempo ao Baileys)
         setTimeout(() => {
             if (!qrCodes.has(empresaId) && connections.has(empresaId)) {
-                console.log(`⏰ Timeout: QR Code não gerado em 5s para empresa ${empresaId}, gerando QR Code manualmente`);
+                console.log(`⏰ Timeout: QR Code não gerado em 15s para empresa ${empresaId}, verificando status da conexão...`);
                 
-                // Gerar QR Code manualmente usando uma string de exemplo
-                const manualQR = `2@${empresaId}@${Date.now()}@manual_qr_code_for_testing`;
-                console.log(`📱 QR Code MANUAL gerado para empresa ${empresaId}!`);
-                console.log(`📏 Tamanho do QR: ${manualQR.length} caracteres`);
-                qrcode.generate(manualQR, { small: true });
-                
-                // Armazena QR Code manual para acesso via API
-                qrCodes.set(empresaId, manualQR);
-                console.log(`✅ QR Code MANUAL armazenado no Map para empresa ${empresaId}`);
-                console.log(`📊 QR Codes no Map:`, Array.from(qrCodes.keys()));
-                
-                // Atualiza status no banco
-                updateConnectionStatus(empresaId, 'aguardando_qr', manualQR);
-                
-                // Remover conexão atual que não está funcionando
-                try {
-                    if (sock.ws) {
-                        sock.ws.close();
-                    }
+                const sock = connections.get(empresaId);
+                if (sock && sock.ws && sock.ws.readyState === 1) { // WebSocket ainda conectado
+                    console.log(`🔄 WebSocket ainda ativo para empresa ${empresaId}, aguardando mais 10s...`);
+                    
+                    // Aguardar mais 10 segundos antes de gerar QR manual
+                    setTimeout(() => {
+                        if (!qrCodes.has(empresaId) && connections.has(empresaId)) {
+                            console.log(`⏰ Segundo timeout: Ainda sem QR Code para empresa ${empresaId}, gerando QR Code manual como último recurso`);
+                            
+                            // Gerar QR Code manualmente apenas como último recurso
+                            const manualQR = `2@${empresaId}@${Date.now()}@manual_qr_code_for_testing`;
+                            console.log(`📱 QR Code MANUAL gerado para empresa ${empresaId}!`);
+                            qrcode.generate(manualQR, { small: true });
+                            
+                            // Armazena QR Code manual para acesso via API
+                            qrCodes.set(empresaId, manualQR);
+                            console.log(`✅ QR Code MANUAL armazenado no Map para empresa ${empresaId}`);
+                            console.log(`📊 QR Codes no Map:`, Array.from(qrCodes.keys()));
+                            
+                            // Atualiza status no banco
+                            updateConnectionStatus(empresaId, 'aguardando_qr', manualQR);
+                        }
+                    }, 10000); // Aguardar mais 10s
+                    
+                } else {
+                    console.log(`❌ WebSocket não está ativo para empresa ${empresaId}, limpando conexão`);
+                    // Limpar conexão inválida
                     connections.delete(empresaId);
                     reconnectAttempts.delete(empresaId);
                     
@@ -316,13 +324,9 @@ async function connectToWhatsApp(empresaId) {
                         clearTimeout(reconnectTimeouts.get(empresaId));
                         reconnectTimeouts.delete(empresaId);
                     }
-                    
-                    console.log(`🧹 Conexão com falha removida para empresa ${empresaId}`);
-                } catch (e) {
-                    console.log(`⚠️ Erro ao limpar conexão com falha: ${e.message}`);
                 }
             }
-        }, 5000);
+        }, 15000); // Timeout inicial aumentado para 15s
 
         // Evento de mensagens recebidas
         sock.ev.on('messages.upsert', async (m) => {
@@ -955,6 +959,53 @@ app.post('/send-media/:empresaId', async (req, res) => {
 });
 
 /**
+ * Status do QR Code para uma empresa (sem gerar QR manual)
+ */
+app.get('/qr-status/:empresaId', (req, res) => {
+    const empresaId = req.params.empresaId;
+    const qr = qrCodes.get(empresaId);
+    const connection = connections.get(empresaId);
+
+    console.log(`🔍 Status QR Code solicitado para empresa ${empresaId}:`);
+    console.log(`   QR Code disponível:`, !!qr);
+    console.log(`   Conexão ativa:`, !!connection);
+
+    if (qr) {
+        // Verificar se o QR Code é manual (falso) ou real do Baileys
+        const isManualQR = qr.includes('manual_qr_code_for_testing');
+        res.json({
+            has_qr: true,
+            is_manual: isManualQR,
+            connected: false,
+            message: isManualQR ? 'QR Code manual disponível (pode não funcionar)' : 'QR Code do WhatsApp disponível'
+        });
+    } else if (connection) {
+        const isReallyConnected = connection.user && connection.user.id;
+        if (isReallyConnected) {
+            res.json({
+                has_qr: false,
+                connected: true,
+                message: 'WhatsApp já conectado'
+            });
+        } else {
+            res.json({
+                has_qr: false,
+                connected: false,
+                is_waiting: true,
+                message: 'Aguardando QR Code do WhatsApp'
+            });
+        }
+    } else {
+        res.status(400).json({
+            has_qr: false,
+            connected: false,
+            error: 'Nenhuma conexão ativa',
+            message: 'É necessário conectar ao WhatsApp primeiro'
+        });
+    }
+});
+
+/**
  * Status das conexões
  */
 app.get('/status', (req, res) => {
@@ -1114,70 +1165,53 @@ app.get('/qr/:empresaId', (req, res) => {
     const empresaId = req.params.empresaId;
     const qr = qrCodes.get(empresaId);
     const connection = connections.get(empresaId);
-    
+
     console.log(`🔍 QR Code solicitado para empresa ${empresaId}:`);
     console.log(`   QR Code disponível:`, !!qr);
     console.log(`   Conexão ativa:`, !!connection);
     console.log(`   QR Codes armazenados:`, Array.from(qrCodes.keys()));
     console.log(`   Conexões ativas:`, Array.from(connections.keys()));
-    
+
     if (qr) {
-        console.log(`✅ Retornando QR Code para empresa ${empresaId}`);
-        res.json({ qr: qr, connected: false });
+        // Verificar se o QR Code é manual (falso) ou real do Baileys
+        const isManualQR = qr.includes('manual_qr_code_for_testing');
+        console.log(`✅ Retornando QR Code para empresa ${empresaId} (${isManualQR ? 'MANUAL' : 'REAL'})`);
+        res.json({
+            qr: qr,
+            connected: false,
+            is_manual: isManualQR,
+            message: isManualQR ? 'QR Code gerado manualmente - pode não funcionar para conexão' : 'QR Code válido do WhatsApp'
+        });
     } else if (connection) {
         // Verificar se a conexão está realmente conectada ou apenas em estado "connecting"
         const isReallyConnected = connection.user && connection.user.id;
         console.log(`🔍 Conexão existe, mas está realmente conectada?`, isReallyConnected);
-        
+
         if (isReallyConnected) {
             console.log(`✅ Empresa ${empresaId} já conectada`);
-            res.json({ qr: null, connected: true });
+            res.json({
+                qr: null,
+                connected: true,
+                message: 'WhatsApp já conectado'
+            });
         } else {
-            console.log(`⚠️ Conexão existe mas não está conectada - gerando QR Code manual`);
-            
-            // Gerar QR Code manualmente
-            const manualQR = `2@${empresaId}@${Date.now()}@manual_qr_code_for_testing`;
-            console.log(`📱 QR Code MANUAL gerado para empresa ${empresaId}!`);
-            qrcode.generate(manualQR, { small: true });
-            
-            // Armazena QR Code manual
-            qrCodes.set(empresaId, manualQR);
-            console.log(`✅ QR Code MANUAL armazenado para empresa ${empresaId}`);
-            
-            // Remover conexão que não está funcionando
-            try {
-                if (connection.ws) {
-                    connection.ws.close();
-                }
-                connections.delete(empresaId);
-                reconnectAttempts.delete(empresaId);
-                
-                // Limpar timeout de reconexão se existir
-                if (reconnectTimeouts.has(empresaId)) {
-                    clearTimeout(reconnectTimeouts.get(empresaId));
-                    reconnectTimeouts.delete(empresaId);
-                }
-                
-                console.log(`🧹 Conexão inválida removida para empresa ${empresaId}`);
-            } catch (e) {
-                console.log(`⚠️ Erro ao limpar conexão: ${e.message}`);
-            }
-            
-            res.json({ qr: manualQR, connected: false, message: 'QR Code manual gerado' });
+            console.log(`⏳ Conexão existe mas não está conectada - aguardando QR Code do WhatsApp...`);
+            // Em vez de gerar QR manual imediatamente, vamos aguardar um pouco mais
+            res.json({
+                qr: null,
+                connected: false,
+                is_waiting: true,
+                message: 'Aguardando QR Code do WhatsApp... Tente novamente em alguns segundos'
+            });
         }
     } else {
-        console.log(`❌ Nenhum QR Code ou conexão para empresa ${empresaId} - gerando QR Code manual`);
-        
-        // Gerar QR Code manualmente
-        const manualQR = `2@${empresaId}@${Date.now()}@manual_qr_code_for_testing`;
-        console.log(`📱 QR Code MANUAL gerado para empresa ${empresaId}!`);
-        qrcode.generate(manualQR, { small: true });
-        
-        // Armazena QR Code manual
-        qrCodes.set(empresaId, manualQR);
-        console.log(`✅ QR Code MANUAL armazenado para empresa ${empresaId}`);
-        
-        res.json({ qr: manualQR, connected: false, message: 'QR Code manual gerado' });
+        console.log(`❌ Nenhuma conexão ou QR Code para empresa ${empresaId} - é necessário conectar primeiro`);
+        res.status(400).json({
+            qr: null,
+            connected: false,
+            error: 'Nenhuma conexão ativa',
+            message: 'É necessário conectar ao WhatsApp primeiro. Use POST /connect/:empresaId'
+        });
     }
 });
 
@@ -1198,6 +1232,8 @@ app.listen(PORT, () => {
     console.log(`  POST /send/:empresaId - Enviar mensagem`);
     console.log(`  POST /send-media/:empresaId - Enviar mídia`);
     console.log(`  GET /status - Status das conexões`);
+    console.log(`  GET /qr-status/:empresaId - Status do QR Code (sem gerar QR manual)`);
+    console.log(`  GET /qr/:empresaId - Obter QR Code`);
     console.log(`  GET /health - Health check`);
 });
 
