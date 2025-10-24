@@ -57,7 +57,7 @@ console.log(`🔗 Flask URL: ${process.env.FLASK_APP_URL}`);
 console.log(`🔗 WhatsApp API URL: ${process.env.WHATSAPP_API_URL_PRODUCTION}`);
 
 // Configurar porta
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 console.log(`🌐 Porta configurada: ${PORT}`);
 
 // Iniciar servidor

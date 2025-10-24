@@ -9,7 +9,11 @@
     "start-baileys": "node --max-old-space-size=4096 baileys_server_multitenant.js",
     "dev": "node --max-old-space-size=4096 --watch baileys_server_multitenant.js",
     "render": "node --max-old-space-size=4096 start.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "debug": "./debug_whatsapp.sh",
+    "reset": "./reset_whatsapp.sh",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "clear": "curl -X POST http://localhost:4000/clear-all",
+    "status": "curl http://localhost:4000/status | python3 -m json.tool"
   },
   "keywords": [
     "whatsapp",
@@ -26,7 +30,6 @@
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.6.0",
     "axios": "^1.6.2",
-    "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.18.2",
     "qrcode-terminal": "^0.12.0"
