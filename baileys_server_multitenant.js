@@ -497,6 +497,36 @@ class WhatsAppTenant {
         }
     }
 
+    async disconnect() {
+        console.log(`🔌 Desconectando tenant ${this.tenantId}...`);
+        
+        // Clear any pending timeouts
+        this.clearQRTimer();
+        
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+        
+        // Close the socket if it exists
+        if (this.sock) {
+            try {
+                if (this.sock.ws && this.sock.ws.readyState === 1) {
+                    await this.sock.end(undefined);
+                }
+            } catch (error) {
+                console.error(`⚠️ Erro ao desconectar socket:`, error.message);
+            } finally {
+                this.sock = null;
+            }
+        }
+        
+        // Reset connection state
+        this.isConnected = false;
+        this.qrCode = null;
+        this.isConnecting = false;
+    }
+    
     async reconnect(reason = 'Conexão encerrada inesperadamente') {
         console.log(`🔄 Iniciando nova conexão para o tenant ${this.tenantId}... Motivo: ${reason}`);
         
