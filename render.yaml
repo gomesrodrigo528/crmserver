@@ -12,7 +12,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 10000
+        value: 3000
       - key: FLASK_APP_URL
         value: https://www.suaagenda.fun
       - key: WHATSAPP_API_URL_PRODUCTION
@@ -22,3 +22,4 @@ services:
       name: whatsapp-sessions
       mountPath: /opt/render/project/src/auth_info
       sizeGB: 1
+
