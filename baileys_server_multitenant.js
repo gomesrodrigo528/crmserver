@@ -113,15 +113,19 @@ app.use((req, res, next) => {
 class WhatsAppTenant {
     constructor(tenantId) {
         this.tenantId = tenantId;
-        this.sock = null;
-        this.isConnected = false;
-        this.qrCode = null;
         this.authDir = path.join(AUTH_DIR, tenantId);
+        this.sock = null;
+        this.qrCode = null;
+        this.qrTimer = null;
+        this.qrGeneratedAt = null;
+        this.qrRegenerationInterval = 20000; // 20 seconds
+        this.isConnected = false;
+        this.isConnecting = false;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
-        this.isConnecting = false;
         this.reconnectTimeout = null;
         this.sessionCleanupInProgress = false;
+        this.eventListeners = {};
     }
 
     async initialize() {
@@ -139,7 +143,7 @@ class WhatsAppTenant {
             // Usa estado de autenticação persistente para este tenant
             const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
 
-                        // Busca a versão mais recente do Baileys
+            // Busca a versão mais recente do Baileys
             console.log(`🔄 Buscando versão mais recente do Baileys...`);
             const { version, isLatest } = await fetchLatestBaileysVersion();
             console.log(`✅ Usando Baileys v${version.join('.')} (${isLatest ? 'mais recente' : 'atualização disponível'})`);
@@ -201,42 +205,38 @@ class WhatsAppTenant {
     }
 
     async handleConnectionUpdate(update) {
-        const { connection, lastDisconnect, qr, isNewLogin } = update;
-        
-        console.log(`🔄 Atualização de conexão (${this.tenantId}):`, JSON.stringify({
-            connection,
-            qr: qr ? 'QR Code recebido' : 'Sem QR',
-            isNewLogin,
-            error: lastDisconnect?.error?.message
-        }, null, 2));
+        const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            this.qrCode = qr;
-            this.reconnectAttempts = 0; // Reset das tentativas quando QR é gerado
-            
-            // Exibe o QR Code no terminal
-            console.log(`📱 QR Code gerado para tenant ${this.tenantId}`);
-            qrcode.generate(qr, { small: true });
-            
-            // Emite o evento de QR Code
-            this.emit('qr', { 
-                tenantId: this.tenantId, 
-                qr: qr,
-                timestamp: new Date().toISOString()
+            console.log(`🔄 Atualização de conexão (${this.tenantId}):`, {
+                qr: qr ? 'QR Code recebido' : 'Sem QR',
+                isNewLogin: update.isNewLogin
             });
             
-            // Se o QR Code não for escaneado em 60 segundos, força uma nova tentativa
-            setTimeout(() => {
-                if (!this.isConnected && this.qrCode === qr) {
-                    console.log(`⏳ QR Code não escaneado em 60 segundos, forçando nova tentativa...`);
-                    this.cleanupSession().then(() => this.connect());
-                }
-            }, 60000);
+            this.qrCode = qr;
+            this.qrGeneratedAt = Date.now();
             
-            return;
-        }
-
-        if (connection === 'close') {
+            // Clear any existing QR timer
+            this.clearQRTimer();
+            
+            // Schedule QR regeneration if not scanned within 20 seconds
+            this.qrTimer = setTimeout(() => {
+                if (!this.isConnected && this.qrCode === qr) {
+                    console.log(`⏳ QR Code expirado para tenant ${this.tenantId}, gerando novo...`);
+                    this.qrCode = null;
+                    this.reconnect('QR Code expirado');
+                }
+            }, this.qrRegenerationInterval);
+            
+            console.log(`📱 QR Code gerado para tenant ${this.tenantId} (válido por 20s)\n${qr}`);
+            
+            // Emit event with QR code
+            this.emit('qr', { 
+                tenantId: this.tenantId, 
+                qr,
+                expiresAt: Date.now() + this.qrRegenerationInterval
+            });
+        } else if (connection === 'close') {
             this.isConnected = false;
             this.qrCode = null;
 
@@ -267,7 +267,7 @@ class WhatsAppTenant {
             }
 
             // Agenda reconexão
-            this.scheduleReconnect('Conexão encerrada inesperadamente');
+            this.reconnect('Conexão encerrada inesperadamente');
 
         } else if (connection === 'open') {
             console.log(`✅ Tenant ${this.tenantId} conectado ao WhatsApp!`);
@@ -341,68 +341,49 @@ class WhatsAppTenant {
         }
     }
 
-    async connect() {
-        // Limpa qualquer tentativa de reconexão agendada
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-
-        // Se já está conectado, não faz nada
-        if (this.isConnected && this.sock) {
-            console.log(`✅ Tenant ${this.tenantId} já está conectado`);
-            return;
-        }
-
-        // Se está no meio de uma conexão, aguarda um pouco e tenta novamente
-        if (this.isConnecting) {
-            console.log(`⏳ Conexão já em andamento para o tenant ${this.tenantId}, aguardando...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            if (this.isConnecting) {
-                throw new Error('Timeout ao aguardar conexão existente');
-            }
-            return this.connect(); // Tenta novamente
-        }
-
-        try {
-            console.log(`🔌 Iniciando conexão para tenant ${this.tenantId}`);
-            
-            // Limpa a sessão antes de tentar conectar
-            await this.cleanupSession();
-            
-            // Pequena pausa para garantir que a limpeza foi concluída
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-            // Inicializa a conexão
-            await this.initialize();
-            
-            // Aguarda um pouco para o QR Code ser gerado
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-        } catch (error) {
-            console.error(`❌ Erro ao conectar tenant ${this.tenantId}:`, error);
-            
-            // Se houver erro, tenta limpar a sessão novamente
-            try {
-                await this.cleanupSession();
-            } catch (cleanupError) {
-                console.error(`❌ Erro ao limpar sessão após falha na conexão:`, cleanupError);
-            }
-            
-            throw error;
-        }
-    }
-
-    async reconnect() {
-        console.log(`🔄 Reconectando tenant ${this.tenantId}...`);
+    async reconnect(reason = 'Conexão encerrada inesperadamente') {
+        console.log(`🔄 Reconectando tenant ${this.tenantId}... Motivo: ${reason}`);
+        
+        // Clear any existing timers or timeouts
+        this.clearQRTimer();
+        
         try {
             await this.disconnect();
-            // Pequena pausa antes de reconectar
+            
+            // Clear any existing reconnect timeout to prevent multiple reconnection attempts
+            if (this.reconnectTimeout) {
+                clearTimeout(this.reconnectTimeout);
+                this.reconnectTimeout = null;
+            }
+            
+            // Small delay before reconnecting
             await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Reset connection state
+            this.qrCode = null;
+            this.isConnecting = false;
+            
+            // Attempt to connect
             await this.connect();
         } catch (error) {
             console.error(`❌ Erro na reconexão do tenant ${this.tenantId}:`, error);
-            throw error;
+            
+            // Schedule another reconnection attempt if needed
+            if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 60000);
+                console.log(`⏳ Tentando novamente em ${delay/1000} segundos...`);
+                
+                this.reconnectTimeout = setTimeout(() => {
+                    this.reconnect('Tentativa de reconexão automática');
+                }, delay);
+            } else {
+                console.error(`❌ Limite máximo de tentativas de reconexão atingido para o tenant ${this.tenantId}`);
+                this.emit('connection_failed', { 
+                    tenantId: this.tenantId, 
+                    reason: 'Limite de tentativas de reconexão atingido',
+                    error: error.message 
+                });
+            }
         }
     }
 
@@ -444,11 +425,21 @@ class WhatsAppTenant {
         await this.sock.sendMessage(formattedPhone, { text: message });
     }
 
+    clearQRTimer() {
+        if (this.qrTimer) {
+            clearTimeout(this.qrTimer);
+            this.qrTimer = null;
+        }
+    }
+
     async cleanupSession() {
         if (this.sessionCleanupInProgress) {
             console.log(`⏳ Limpeza de sessão já em andamento para o tenant ${this.tenantId}`);
             return;
         }
+        
+        // Clear any pending QR regeneration
+        this.clearQRTimer();
         
         this.sessionCleanupInProgress = true;
         console.log(`🧹 Iniciando limpeza de sessão para o tenant ${this.tenantId}...`);
