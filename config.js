@@ -5,7 +5,7 @@ export const CONFIG = {
   HOST: process.env.HOST || '0.0.0.0',
 
   // Flask Integration
-  FLASK_URL: process.env.FLASK_URL || 'http://127.0.0.1:5000',
+  FLASK_URL: process.env.FLASK_URL || 'https://suaagenda.fun',
 
   // Autenticação
   AUTH_DIR: process.env.AUTH_DIR || 'auth',
