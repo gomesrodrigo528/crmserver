@@ -337,58 +337,11 @@ class WhatsAppTenant {
             }
 
         } catch (error) {
-            console.error(`❌ [${this.tenantId}] Erro ao processar mensagem:`, error.message);
-        }
-    }
-
-    async reconnect(reason = 'Conexão encerrada inesperadamente') {
-        console.log(`🔄 Reconectando tenant ${this.tenantId}... Motivo: ${reason}`);
         
-        // Clear any existing timers or timeouts
-        this.clearQRTimer();
+        this.qrCode = qr;
+        this.qrGeneratedAt = Date.now();
         
-        try {
-            await this.disconnect();
-            
-            // Clear any existing reconnect timeout to prevent multiple reconnection attempts
-            if (this.reconnectTimeout) {
-                clearTimeout(this.reconnectTimeout);
-                this.reconnectTimeout = null;
-            }
-            
-            // Small delay before reconnecting
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            // Reset connection state
-            this.qrCode = null;
-            this.isConnecting = false;
-            
-            // Attempt to connect
-            await this.connect();
-        } catch (error) {
-            console.error(`❌ Erro na reconexão do tenant ${this.tenantId}:`, error);
-            
-            // Schedule another reconnection attempt if needed
-            if (this.reconnectAttempts < this.maxReconnectAttempts) {
-                const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 60000);
-                console.log(`⏳ Tentando novamente em ${delay/1000} segundos...`);
-                
-                this.reconnectTimeout = setTimeout(() => {
-                    this.reconnect('Tentativa de reconexão automática');
-                }, delay);
-            } else {
-                console.error(`❌ Limite máximo de tentativas de reconexão atingido para o tenant ${this.tenantId}`);
-                this.emit('connection_failed', { 
-                    tenantId: this.tenantId, 
-                    reason: 'Limite de tentativas de reconexão atingido',
-                    error: error.message 
-                });
-            }
-        }
-    }
-
-    async disconnect() {
-        // Limpa qualquer tentativa de reconexão agendada
+        // Clear any existing QR timer
         if (this.reconnectTimeout) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
@@ -502,40 +455,37 @@ class WhatsAppTenant {
         }
     }
 
-    scheduleReconnect(reason) {
-        // Limpa qualquer reconexão pendente
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-        }
-
-        // Verifica se atingiu o limite de tentativas
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.log(`❌ Limite de tentativas de reconexão atingido para o tenant ${this.tenantId}`);
-            this.emit('reconnect_failed', { 
-                tenantId: this.tenantId, 
-                reason: 'Limite de tentativas atingido',
-                attempts: this.reconnectAttempts
-            });
-            return;
-        }
-
-        // Incrementa o contador de tentativas
-        this.reconnectAttempts++;
-
-        // Cálculo de backoff exponencial (mínimo 5s, máximo 60s)
-        const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts - 1), 60000);
-
-        console.log(`⏳ Tentando reconectar tenant ${this.tenantId} em ${delay/1000}s (tentativa ${this.reconnectAttempts}/${this.maxReconnectAttempts}). Motivo: ${reason}`);
-
-        this.reconnectTimeout = setTimeout(async () => {
-            try {
-                await this.reconnect();
-            } catch (error) {
-                console.error(`❌ Falha na reconexão do tenant ${this.tenantId}:`, error.message);
-                // Agenda uma nova tentativa
-                this.scheduleReconnect('Falha na reconexão');
+    async reconnect(reason = 'Conexão encerrada inesperadamente') {
+        console.log(`🔄 Iniciando nova conexão para o tenant ${this.tenantId}... Motivo: ${reason}`);
+        
+        try {
+            // Disconnect first if needed
+            await this.disconnect();
+            
+            // Clear any existing reconnect timeout
+            if (this.reconnectTimeout) {
+                clearTimeout(this.reconnectTimeout);
+                this.reconnectTimeout = null;
             }
-        }, delay);
+            
+            // Reset connection state
+            this.qrCode = null;
+            this.isConnecting = false;
+            this.reconnectAttempts = 0;
+            
+            // Start a fresh connection by reinitializing
+            await this.initialize();
+            
+        } catch (error) {
+            console.error(`❌ Erro ao reconectar o tenant ${this.tenantId}:`, error);
+            
+            // Emit failure event without automatic retry
+            this.emit('connection_failed', { 
+                tenantId: this.tenantId, 
+                reason: 'Falha ao reconectar',
+                error: error.message 
+            });
+        }
     }
 
     getStatus() {
