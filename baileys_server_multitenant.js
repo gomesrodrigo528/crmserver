@@ -945,7 +945,7 @@ app.post('/connect/:empresaId', async (req, res) => {
         }
 
         // Inicia a conexão
-        await tenant.connect();
+        await tenant.reconnect('Iniciando nova conexão');
 
         res.json({
             success: true,
@@ -993,7 +993,7 @@ app.get('/qr/:empresaId', async (req, res) => {
         }
 
         // Se não tem QR, força reconexão para gerar um novo
-        await tenant.connect();
+        await tenant.reconnect('Solicitação de novo QR code');
 
         // Aguarda um pouco para gerar o QR (máximo 15 segundos)
         let attempts = 0;
