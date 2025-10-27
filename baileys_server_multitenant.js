@@ -53,9 +53,19 @@ class WhatsAppTenant {
         this.authDir = path.join(AUTH_DIR, tenantId);
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
+        this.isConnecting = false;
+        this.reconnectTimeout = null;
+        this.sessionCleanupInProgress = false;
     }
 
     async initialize() {
+        if (this.isConnecting) {
+            console.log(`⏳ Já existe uma inicialização em andamento para o tenant ${this.tenantId}`);
+            return;
+        }
+
+        this.isConnecting = true;
+        
         try {
             // Cria diretório de autenticação se não existir
             await fs.mkdir(this.authDir, { recursive: true });
@@ -72,11 +82,12 @@ class WhatsAppTenant {
                 printQRInTerminal: false,
                 auth: state,
                 browser: [`WhatsApp-${this.tenantId}`, 'Chrome', '1.0.0'],
-                // Configurações para melhorar estabilidade
                 generateHighQualityLinkPreview: false,
                 syncFullHistory: false,
                 markOnlineOnConnect: false,
-                defaultQueryTimeoutMs: 30000
+                defaultQueryTimeoutMs: 30000,
+                keepAliveIntervalMs: 20000,
+                connectTimeoutMs: 60000
             });
 
             // Salva credenciais quando atualizadas
@@ -97,55 +108,54 @@ class WhatsAppTenant {
         } catch (error) {
             console.error(`❌ Erro ao inicializar tenant ${this.tenantId}:`, error);
             throw error;
+        } finally {
+            this.isConnecting = false;
         }
     }
 
-    handleConnectionUpdate(update) {
+    async handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
             this.qrCode = qr;
             this.reconnectAttempts = 0; // Reset das tentativas quando QR é gerado
             console.log(`📱 QR Code gerado para tenant ${this.tenantId}`);
-            // Emite evento para API acessar o QR
             this.emit('qr', { tenantId: this.tenantId, qr: qr });
+            return;
         }
 
         if (connection === 'close') {
             this.isConnected = false;
             this.qrCode = null;
 
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            const errorCode = (lastDisconnect?.error)?.output?.statusCode;
+            const error = lastDisconnect?.error;
+            const statusCode = error?.output?.statusCode;
+            const isLogout = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+            const shouldReconnect = !isLogout;
 
             console.log(`❌ Tenant ${this.tenantId} desconectado:`, {
-                error: lastDisconnect?.error?.message || 'Erro desconhecido',
-                code: errorCode,
+                error: error?.message || 'Erro desconhecido',
+                code: statusCode,
                 shouldReconnect: shouldReconnect
             });
 
-            // Não reconectar se foi logout pelo usuário
-            if (!shouldReconnect) {
+            // Limpa o socket atual
+            this.sock = null;
+
+            // Se foi logout, limpa a sessão
+            if (isLogout) {
                 console.log(`🚪 Tenant ${this.tenantId} deslogado pelo usuário`);
+                await this.cleanupSession();
                 return;
             }
 
-            // Reconectar com delay progressivo (máx 30s)
-            if (this.reconnectAttempts < this.maxReconnectAttempts) {
-                this.reconnectAttempts++;
-                const delay = Math.min(5000 * this.reconnectAttempts, 30000); // Máx 30s
-                console.log(`🔄 Tentando reconectar tenant ${this.tenantId} em ${delay}ms (tentativa ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
-                setTimeout(async () => {
-                    try {
-                        await this.reconnect();
-                    } catch (error) {
-                        console.error(`❌ Erro na reconexão do tenant ${this.tenantId}:`, error);
-                    }
-                }, delay);
-            } else {
-                console.log(`❌ Máximo de tentativas de reconexão atingido para tenant ${this.tenantId}`);
+            // Se não deve reconectar, para aqui
+            if (!shouldReconnect) {
+                return;
             }
+
+            // Agenda reconexão
+            this.scheduleReconnect('Conexão encerrada inesperadamente');
 
         } else if (connection === 'open') {
             console.log(`✅ Tenant ${this.tenantId} conectado ao WhatsApp!`);
@@ -220,21 +230,30 @@ class WhatsAppTenant {
     }
 
     async connect() {
+        // Limpa qualquer tentativa de reconexão agendada
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+
+        // Se já está conectado, não faz nada
+        if (this.isConnected && this.sock) {
+            console.log(`✅ Tenant ${this.tenantId} já está conectado`);
+            return;
+        }
+
+        // Se está no meio de uma conexão, aguarda um pouco e tenta novamente
+        if (this.isConnecting) {
+            console.log(`⏳ Conexão já em andamento para o tenant ${this.tenantId}, aguardando...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            if (this.isConnecting) {
+                throw new Error('Timeout ao aguardar conexão existente');
+            }
+            return this.connect(); // Tenta novamente
+        }
+
         try {
-            // Se já está conectado, não faz nada
-            if (this.isConnected && this.sock) {
-                console.log(`✅ Tenant ${this.tenantId} já está conectado`);
-                return;
-            }
-
-            // Se tem socket mas não está conectado, desconecta primeiro
-            if (this.sock) {
-                console.log(`🔄 Reinicializando conexão do tenant ${this.tenantId}`);
-                await this.disconnect();
-                // Pequena pausa antes de reconectar
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-
+            console.log(`🔌 Iniciando conexão para tenant ${this.tenantId}`);
             await this.initialize();
         } catch (error) {
             console.error(`❌ Erro ao conectar tenant ${this.tenantId}:`, error);
@@ -244,12 +263,37 @@ class WhatsAppTenant {
 
     async reconnect() {
         console.log(`🔄 Reconectando tenant ${this.tenantId}...`);
-        await this.connect();
+        try {
+            await this.disconnect();
+            // Pequena pausa antes de reconectar
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            await this.connect();
+        } catch (error) {
+            console.error(`❌ Erro na reconexão do tenant ${this.tenantId}:`, error);
+            throw error;
+        }
     }
 
     async disconnect() {
-        if (this.sock) {
-            await this.sock.logout();
+        // Limpa qualquer tentativa de reconexão agendada
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+
+        if (!this.sock) {
+            return;
+        }
+
+        try {
+            // Verifica se o socket ainda está aberto antes de tentar logout
+            if (this.sock.ws && this.sock.ws.readyState === 1) {
+                await this.sock.logout();
+                console.log(`✅ Tenant ${this.tenantId} desconectado com sucesso`);
+            }
+        } catch (error) {
+            console.error(`❌ Erro ao desconectar tenant ${this.tenantId}:`, error.message);
+        } finally {
             this.sock = null;
             this.isConnected = false;
             this.qrCode = null;
@@ -271,12 +315,67 @@ class WhatsAppTenant {
         return { success: true, message: 'Mensagem enviada com sucesso' };
     }
 
+    async cleanupSession() {
+        if (this.sessionCleanupInProgress) return;
+        this.sessionCleanupInProgress = true;
+
+        try {
+            console.log(`🧹 Limpando sessão do tenant ${this.tenantId}...`);
+            if (fs.existsSync(this.authDir)) {
+                await fs.rm(this.authDir, { recursive: true, force: true });
+                console.log(`✅ Sessão do tenant ${this.tenantId} limpa com sucesso`);
+            }
+        } catch (error) {
+            console.error(`❌ Erro ao limpar sessão do tenant ${this.tenantId}:`, error);
+        } finally {
+            this.sessionCleanupInProgress = false;
+        }
+    }
+
+    scheduleReconnect(reason) {
+        // Limpa qualquer reconexão pendente
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+        }
+
+        // Verifica se atingiu o limite de tentativas
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.log(`❌ Limite de tentativas de reconexão atingido para o tenant ${this.tenantId}`);
+            this.emit('reconnect_failed', { 
+                tenantId: this.tenantId, 
+                reason: 'Limite de tentativas atingido',
+                attempts: this.reconnectAttempts
+            });
+            return;
+        }
+
+        // Incrementa o contador de tentativas
+        this.reconnectAttempts++;
+
+        // Cálculo de backoff exponencial (mínimo 5s, máximo 60s)
+        const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts - 1), 60000);
+
+        console.log(`⏳ Tentando reconectar tenant ${this.tenantId} em ${delay/1000}s (tentativa ${this.reconnectAttempts}/${this.maxReconnectAttempts}). Motivo: ${reason}`);
+
+        this.reconnectTimeout = setTimeout(async () => {
+            try {
+                await this.reconnect();
+            } catch (error) {
+                console.error(`❌ Falha na reconexão do tenant ${this.tenantId}:`, error.message);
+                // Agenda uma nova tentativa
+                this.scheduleReconnect('Falha na reconexão');
+            }
+        }, delay);
+    }
+
     getStatus() {
         return {
             tenantId: this.tenantId,
             connected: this.isConnected,
             qrCode: this.qrCode ? true : false,
-            reconnectAttempts: this.reconnectAttempts
+            reconnectAttempts: this.reconnectAttempts,
+            isConnecting: this.isConnecting,
+            maxReconnectAttempts: this.maxReconnectAttempts
         };
     }
 }
