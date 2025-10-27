@@ -22,21 +22,51 @@ import {
 // Configurações
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const FLASK_URL = "https://suaagenda.fun";
-const PORT = 3000;
-const AUTH_DIR = path.join(__dirname, 'auth');
+const FLASK_URL = process.env.FLASK_APP_URL || "https://suaagenda.fun";
+const PORT = process.env.PORT || 3000;
+const AUTH_DIR = path.join(__dirname, 'auth_info');
 
-// Configuração simples do logger
-const logger = {
-    level: 'info',
-    debug: (...args) => console.debug('[DEBUG]', ...args),
-    info: (...args) => console.log('[INFO]', ...args),
-    warn: (...args) => console.warn('[WARN]', ...args),
-    error: (...args) => console.error('[ERROR]', ...args),
-    fatal: (...args) => console.error('[FATAL]', ...args),
-    trace: (...args) => console.trace('[TRACE]', ...args),
-    child: () => logger
-};
+// Configuração do logger
+class Logger {
+    constructor() {
+        this.level = 'info';
+    }
+
+    debug(...args) { 
+        if (this.shouldLog('debug')) console.debug('[DEBUG]', ...args);
+    }
+    
+    info(...args) { 
+        if (this.shouldLog('info')) console.log('[INFO]', ...args);
+    }
+    
+    warn(...args) { 
+        if (this.shouldLog('warn')) console.warn('[WARN]', ...args);
+    }
+    
+    error(...args) { 
+        console.error('[ERROR]', ...args);
+    }
+    
+    fatal(...args) { 
+        console.error('[FATAL]', ...args);
+    }
+    
+    trace(...args) { 
+        console.trace('[TRACE]', ...args);
+    }
+    
+    child() {
+        return this;
+    }
+    
+    shouldLog(level) {
+        const levels = ['error', 'warn', 'info', 'debug'];
+        return levels.indexOf(level) <= levels.indexOf(this.level);
+    }
+}
+
+const logger = new Logger();
 
 // Inicialização do Express
 const app = express();
@@ -337,6 +367,8 @@ class WhatsAppTenant {
             }
 
         } catch (error) {
+            console.error(`❌ Erro no webhook:`, error);
+        }
         
         this.qrCode = qr;
         this.qrGeneratedAt = Date.now();
@@ -367,17 +399,21 @@ class WhatsAppTenant {
     }
 
     async sendMessage(phone, message) {
-        if (!this.isConnected || !this.sock) {
-            throw new Error('Tenant não está conectado');
-        }
-
         try {
+            if (!this.isConnected || !this.sock) {
+                throw new Error('Tenant não está conectado');
+            }
+
             // Formata o número do telefone
             const formattedPhone = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
 
             // Envia a mensagem
             const result = await this.sock.sendMessage(formattedPhone, { text: message });
-            return { success: true, message: 'Mensagem enviada com sucesso', messageId: result?.key?.id };
+            return { 
+                success: true, 
+                message: 'Mensagem enviada com sucesso', 
+                messageId: result?.key?.id 
+            };
         } catch (error) {
             console.error(`❌ Erro ao enviar mensagem para ${phone}:`, error);
             throw new Error(`Falha ao enviar mensagem: ${error.message}`);
