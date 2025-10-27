@@ -4,27 +4,7 @@
  * Gerencia múltiplas conexões WhatsApp simultaneamente
  */
 
-import { 
-    makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion
-} from "@whiskeysockets/baileys";
-import pkg from 'pino';
-const { pino } = pkg;
-
-// Configuração do logger
-const logger = pino({
-    level: 'debug',
-    transport: {
-        target: 'pino-pretty',
-        options: {
-            colorize: true,
-            translateTime: true,
-            ignore: 'pid,hostname',
-        },
-    },
-});
+// Importações de bibliotecas
 import express from "express";
 import axios from "axios";
 import { Boom } from "@hapi/boom";
@@ -32,10 +12,33 @@ import qrcode from "qrcode-terminal";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from 'url';
+import { 
+    makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion
+} from "@whiskeysockets/baileys";
 
+// Configurações
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const FLASK_URL = "https://suaagenda.fun";
+const PORT = 3000;
+const AUTH_DIR = path.join(__dirname, 'auth');
 
+// Configuração simples do logger
+const logger = {
+    level: 'info',
+    debug: (...args) => console.debug('[DEBUG]', ...args),
+    info: (...args) => console.log('[INFO]', ...args),
+    warn: (...args) => console.warn('[WARN]', ...args),
+    error: (...args) => console.error('[ERROR]', ...args),
+    fatal: (...args) => console.error('[FATAL]', ...args),
+    trace: (...args) => console.trace('[TRACE]', ...args),
+    child: () => logger
+};
+
+// Inicialização do Express
 const app = express();
 app.use(express.json());
 
@@ -105,11 +108,6 @@ app.use((req, res, next) => {
         next();
     }
 });
-
-// Configurações
-const FLASK_URL = "https://suaagenda.fun";
-const PORT = 3000;
-const AUTH_DIR = path.join(__dirname, 'auth');
 
 // Classe para gerenciar cada tenant WhatsApp
 class WhatsAppTenant {
