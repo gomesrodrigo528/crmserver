@@ -497,7 +497,7 @@ class WhatsAppTenant {
         }
     }
 
-    async disconnect() {
+    async disconnect(removeAuthFolder = true) {
         console.log(`🔌 Desconectando tenant ${this.tenantId}...`);
         
         // Clear any pending timeouts
@@ -513,6 +513,7 @@ class WhatsAppTenant {
             try {
                 if (this.sock.ws && this.sock.ws.readyState === 1) {
                     await this.sock.end(undefined);
+                    console.log(`✅ Conexão do tenant ${this.tenantId} finalizada com sucesso`);
                 }
             } catch (error) {
                 console.error(`⚠️ Erro ao desconectar socket:`, error.message);
@@ -521,10 +522,43 @@ class WhatsAppTenant {
             }
         }
         
+        // Remove authentication folder if requested
+        if (removeAuthFolder) {
+            try {
+                // Check if auth directory exists before trying to remove it
+                try {
+                    await fs.access(this.authDir);
+                    // Directory exists, remove it
+                    await fs.rm(this.authDir, { recursive: true, force: true });
+                    console.log(`🗑️  Pasta de autenticação removida: ${this.authDir}`);
+                } catch (error) {
+                    if (error.code === 'ENOENT') {
+                        console.log(`ℹ️  Pasta de autenticação não encontrada: ${this.authDir}`);
+                    } else {
+                        throw error;
+                    }
+                }
+            } catch (error) {
+                console.error(`❌ Erro ao remover pasta de autenticação:`, error.message);
+                // Try one more time after a short delay
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                try {
+                    await fs.access(this.authDir);
+                    await fs.rm(this.authDir, { recursive: true, force: true });
+                    console.log(`✅ Pasta de autenticação removida na segunda tentativa`);
+                } catch (retryError) {
+                    if (retryError.code !== 'ENOENT') {
+                        console.error(`❌ Falha ao remover pasta de autenticação:`, retryError.message);
+                    }
+                }
+            }
+        }
+        
         // Reset connection state
         this.isConnected = false;
         this.qrCode = null;
         this.isConnecting = false;
+        this.reconnectAttempts = 0;
     }
     
     async reconnect(reason = 'Conexão encerrada inesperadamente') {
