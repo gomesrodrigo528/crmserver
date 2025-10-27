@@ -890,12 +890,7 @@ app.listen(PORT, async () => {
     console.log(`🔄 Flask URL: ${FLASK_URL}`);
 
     // Cria diretório de auth se não existir
-    try {
-        await fs.mkdir(AUTH_DIR, { recursive: true });
-        console.log(`📁 Diretório de autenticação: ${AUTH_DIR}`);
-    } catch (error) {
-        console.error('❌ Erro ao criar diretório de auth:', error);
-    }
+    
 });
 
 // Tratamento de erros não capturados
@@ -907,4 +902,5 @@ process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error);
     process.exit(1);
 });
+
 
