@@ -1,7 +1,7 @@
 // Configurações do WhatsApp Multi-Tenant Server
 export const CONFIG = {
   // Servidor
-  PORT: process.env.PORT || 4000,
+  PORT: process.env.PORT || 3000,
   HOST: process.env.HOST || '0.0.0.0',
 
   // Flask Integration
