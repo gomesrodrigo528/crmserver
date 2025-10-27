@@ -39,7 +39,7 @@ app.use((req, res, next) => {
 });
 
 // Configurações
-const FLASK_URL = "http://127.0.0.1:5000";
+const FLASK_URL = "https://suaagenda.fun";
 const PORT = 4000;
 const AUTH_DIR = path.join(__dirname, 'auth');
 
@@ -434,6 +434,7 @@ app.post('/webhook', async (req, res) => {
         res.json({
             success: true,
             message: 'Webhook processado com sucesso'
+
         });
 
     } catch (error) {
