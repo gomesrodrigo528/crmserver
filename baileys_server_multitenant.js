@@ -442,9 +442,6 @@ class WhatsAppTenant {
 
         // Envia a mensagem
         await this.sock.sendMessage(formattedPhone, { text: message });
-
-        console.log(`✅ [${this.tenantId}] Mensagem enviada para ${phone}: ${message}`);
-        return { success: true, message: 'Mensagem enviada com sucesso' };
     }
 
     async cleanupSession() {
@@ -471,16 +468,30 @@ class WhatsAppTenant {
             // Remove o diretório de autenticação
             try {
                 console.log(`🗑️ Removendo diretório de autenticação: ${this.authDir}`);
-                if (fs.existsSync(this.authDir)) {
+                try {
+                    // Tenta acessar o diretório para ver se existe
+                    await fs.access(this.authDir);
+                    // Se chegou aqui, o diretório existe e pode ser removido
                     await fs.rm(this.authDir, { recursive: true, force: true });
                     console.log(`✅ Diretório de autenticação removido com sucesso`);
+                } catch (accessError) {
+                    if (accessError.code === 'ENOENT') {
+                        console.log(`ℹ️  Diretório de autenticação não encontrado, pulando remoção`);
+                    } else {
+                        throw accessError;
+                    }
                 }
             } catch (error) {
                 console.error(`❌ Erro ao remover diretório de autenticação:`, error.message);
                 // Tenta novamente após um curto período
                 await new Promise(resolve => setTimeout(resolve, 1000));
-                if (fs.existsSync(this.authDir)) {
+                try {
+                    await fs.access(this.authDir);
                     await fs.rm(this.authDir, { recursive: true, force: true });
+                } catch (retryError) {
+                    if (retryError.code !== 'ENOENT') {
+                        console.error(`❌ Erro na segunda tentativa de remoção:`, retryError.message);
+                    }
                 }
             }
 
