@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // Configurações
 const FLASK_URL = "https://suaagenda.fun";
-const PORT = 4000;
+const PORT = 3000;
 const AUTH_DIR = path.join(__dirname, 'auth');
 
 // Classe para gerenciar cada tenant WhatsApp
@@ -907,3 +907,4 @@ process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error);
     process.exit(1);
 });
+
