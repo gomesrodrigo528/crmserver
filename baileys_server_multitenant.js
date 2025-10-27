@@ -23,6 +23,58 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
+// ========== FUNÇÕES AUXILIARES ========== //
+/**
+ * Limpa todas as pastas de autenticação
+ * @returns {Promise<void>}
+ */
+async function clearAllAuthFolders() {
+    try {
+        console.log('🔍 Verificando pastas de autenticação...');
+        
+        // Verifica se o diretório auth existe
+        try {
+            await fs.access(AUTH_DIR);
+        } catch (error) {
+            console.log('ℹ️  Diretório de autenticação não encontrado, criando...');
+            await fs.mkdir(AUTH_DIR, { recursive: true });
+            return;
+        }
+        
+        // Lista todos os diretórios dentro de AUTH_DIR
+        const items = await fs.readdir(AUTH_DIR, { withFileTypes: true });
+        
+        // Filtra apenas diretórios
+        const directories = items
+            .filter(item => item.isDirectory())
+            .map(dir => path.join(AUTH_DIR, dir.name));
+        
+        if (directories.length === 0) {
+            console.log('✅ Nenhuma pasta de autenticação encontrada para limpar');
+            return;
+        }
+        
+        console.log(`🧹 Iniciando limpeza de ${directories.length} pastas de autenticação...`);
+        
+        // Remove cada diretório recursivamente
+        await Promise.all(
+            directories.map(async dir => {
+                try {
+                    await fs.rm(dir, { recursive: true, force: true });
+                    console.log(`✅ Pasta removida: ${path.basename(dir)}`);
+                } catch (error) {
+                    console.error(`❌ Erro ao remover pasta ${dir}:`, error.message);
+                }
+            })
+        );
+        
+        console.log('✅ Todas as pastas de autenticação foram limpas com sucesso');
+    } catch (error) {
+        console.error('❌ Erro ao limpar pastas de autenticação:', error);
+        // Não lança o erro para não impedir o servidor de iniciar
+    }
+}
+
 // ========== CORS CONFIGURATION ========== //
 app.use((req, res, next) => {
     // Permitir todas as origens para desenvolvimento
@@ -73,13 +125,15 @@ class WhatsAppTenant {
             // Usa estado de autenticação persistente para este tenant
             const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
 
-            // Busca a versão mais recente do Baileys
-            const { version } = await fetchLatestBaileysVersion();
+                        // Busca a versão mais recente do Baileys
+            console.log(`🔄 Buscando versão mais recente do Baileys...`);
+            const { version, isLatest } = await fetchLatestBaileysVersion();
+            console.log(`✅ Usando Baileys v${version.join('.')} (${isLatest ? 'mais recente' : 'atualização disponível'})`);
 
-            // Cria o socket do WhatsApp para este tenant
-            this.sock = makeWASocket({
+            // Configuração do socket
+            const socketConfig = {
                 version,
-                printQRInTerminal: false,
+                printQRInTerminal: true, // Ativa o QR Code no terminal para debug
                 auth: state,
                 browser: [`WhatsApp-${this.tenantId}`, 'Chrome', '1.0.0'],
                 generateHighQualityLinkPreview: false,
@@ -87,8 +141,27 @@ class WhatsAppTenant {
                 markOnlineOnConnect: false,
                 defaultQueryTimeoutMs: 30000,
                 keepAliveIntervalMs: 20000,
-                connectTimeoutMs: 60000
-            });
+                connectTimeoutMs: 60000,
+                logger: P({ level: 'debug' }), // Habilita logs detalhados
+                // Configurações adicionais para melhorar a estabilidade
+                retryRequestDelayMs: 1000,
+                maxRetryCount: 5,
+                // Força a geração de um novo QR Code se necessário
+                shouldSyncHistoryMessage: () => false,
+                // Desativa recursos não essenciais
+                linkPreviewImageThumbnailWidth: 0,
+                // Configurações de reconexão
+                connectCooldownMs: 5000,
+                // Desativa a sincronização de histórico
+                shouldSyncHistoryMessage: () => false,
+                // Desativa a sincronização de contatos
+                shouldSyncContacts: false,
+                // Desativa a sincronização de grupos
+                shouldSyncGroups: false
+            };
+
+            console.log(`🔌 Criando socket para tenant ${this.tenantId}...`);
+            this.sock = makeWASocket(socketConfig);
 
             // Salva credenciais quando atualizadas
             this.sock.ev.on('creds.update', saveCreds);
@@ -114,13 +187,38 @@ class WhatsAppTenant {
     }
 
     async handleConnectionUpdate(update) {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
+        
+        console.log(`🔄 Atualização de conexão (${this.tenantId}):`, JSON.stringify({
+            connection,
+            qr: qr ? 'QR Code recebido' : 'Sem QR',
+            isNewLogin,
+            error: lastDisconnect?.error?.message
+        }, null, 2));
 
         if (qr) {
             this.qrCode = qr;
             this.reconnectAttempts = 0; // Reset das tentativas quando QR é gerado
+            
+            // Exibe o QR Code no terminal
             console.log(`📱 QR Code gerado para tenant ${this.tenantId}`);
-            this.emit('qr', { tenantId: this.tenantId, qr: qr });
+            qrcode.generate(qr, { small: true });
+            
+            // Emite o evento de QR Code
+            this.emit('qr', { 
+                tenantId: this.tenantId, 
+                qr: qr,
+                timestamp: new Date().toISOString()
+            });
+            
+            // Se o QR Code não for escaneado em 60 segundos, força uma nova tentativa
+            setTimeout(() => {
+                if (!this.isConnected && this.qrCode === qr) {
+                    console.log(`⏳ QR Code não escaneado em 60 segundos, forçando nova tentativa...`);
+                    this.cleanupSession().then(() => this.connect());
+                }
+            }, 60000);
+            
             return;
         }
 
@@ -254,9 +352,29 @@ class WhatsAppTenant {
 
         try {
             console.log(`🔌 Iniciando conexão para tenant ${this.tenantId}`);
+            
+            // Limpa a sessão antes de tentar conectar
+            await this.cleanupSession();
+            
+            // Pequena pausa para garantir que a limpeza foi concluída
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Inicializa a conexão
             await this.initialize();
+            
+            // Aguarda um pouco para o QR Code ser gerado
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
         } catch (error) {
             console.error(`❌ Erro ao conectar tenant ${this.tenantId}:`, error);
+            
+            // Se houver erro, tenta limpar a sessão novamente
+            try {
+                await this.cleanupSession();
+            } catch (cleanupError) {
+                console.error(`❌ Erro ao limpar sessão após falha na conexão:`, cleanupError);
+            }
+            
             throw error;
         }
     }
@@ -316,17 +434,53 @@ class WhatsAppTenant {
     }
 
     async cleanupSession() {
-        if (this.sessionCleanupInProgress) return;
+        if (this.sessionCleanupInProgress) {
+            console.log(`⏳ Limpeza de sessão já em andamento para o tenant ${this.tenantId}`);
+            return;
+        }
+        
         this.sessionCleanupInProgress = true;
+        console.log(`🧹 Iniciando limpeza de sessão para o tenant ${this.tenantId}...`);
 
         try {
-            console.log(`🧹 Limpando sessão do tenant ${this.tenantId}...`);
-            if (fs.existsSync(this.authDir)) {
-                await fs.rm(this.authDir, { recursive: true, force: true });
-                console.log(`✅ Sessão do tenant ${this.tenantId} limpa com sucesso`);
+            // Fecha a conexão atual se existir
+            if (this.sock) {
+                try {
+                    console.log(`🔌 Desconectando socket do tenant ${this.tenantId}...`);
+                    await this.sock.end(undefined);
+                } catch (error) {
+                    console.error(`⚠️ Erro ao desconectar socket:`, error.message);
+                }
+                this.sock = null;
             }
+
+            // Remove o diretório de autenticação
+            try {
+                console.log(`🗑️ Removendo diretório de autenticação: ${this.authDir}`);
+                if (fs.existsSync(this.authDir)) {
+                    await fs.rm(this.authDir, { recursive: true, force: true });
+                    console.log(`✅ Diretório de autenticação removido com sucesso`);
+                }
+            } catch (error) {
+                console.error(`❌ Erro ao remover diretório de autenticação:`, error.message);
+                // Tenta novamente após um curto período
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                if (fs.existsSync(this.authDir)) {
+                    await fs.rm(this.authDir, { recursive: true, force: true });
+                }
+            }
+
+            // Limpa o QR Code e estados
+            this.qrCode = null;
+            this.isConnected = false;
+            this.reconnectAttempts = 0;
+            this.reconnectTimeout = null;
+
+            console.log(`✅ Sessão do tenant ${this.tenantId} limpa com sucesso`);
+
         } catch (error) {
-            console.error(`❌ Erro ao limpar sessão do tenant ${this.tenantId}:`, error);
+            console.error(`❌ Erro na limpeza da sessão do tenant ${this.tenantId}:`, error);
+            throw error;
         } finally {
             this.sessionCleanupInProgress = false;
         }
@@ -965,7 +1119,12 @@ app.get('/health', (req, res) => {
  * Inicia o servidor
  */
 app.listen(PORT, async () => {
-    console.log(`🚀 Servidor Baileys Multi-Tenant rodando na porta ${PORT}`);
+    console.log(`🚀 Servidor rodando na porta ${PORT}`);
+    
+    // Limpa todas as pastas de autenticação ao iniciar
+    await clearAllAuthFolders();
+    console.log('🔄 Pronto para receber conexões');
+
     console.log(`🔗 APIs Flask (compatibilidade):`);
     console.log(`   POST /send/:empresaId - Enviar mensagem via empresa (Flask)`);
     console.log(`   POST /webhook - Webhook para Flask`);
