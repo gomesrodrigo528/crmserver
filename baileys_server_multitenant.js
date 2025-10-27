@@ -371,11 +371,17 @@ class WhatsAppTenant {
             throw new Error('Tenant não está conectado');
         }
 
-        // Formata o número do telefone
-        const formattedPhone = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
+        try {
+            // Formata o número do telefone
+            const formattedPhone = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
 
-        // Envia a mensagem
-        await this.sock.sendMessage(formattedPhone, { text: message });
+            // Envia a mensagem
+            const result = await this.sock.sendMessage(formattedPhone, { text: message });
+            return { success: true, message: 'Mensagem enviada com sucesso', messageId: result?.key?.id };
+        } catch (error) {
+            console.error(`❌ Erro ao enviar mensagem para ${phone}:`, error);
+            throw new Error(`Falha ao enviar mensagem: ${error.message}`);
+        }
     }
 
     clearQRTimer() {
