@@ -57,9 +57,10 @@ console.log(`🔗 Flask URL: ${process.env.FLASK_APP_URL}`);
 console.log(`🔗 WhatsApp API URL: ${process.env.WHATSAPP_API_URL_PRODUCTION}`);
 
 // Configurar porta
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 console.log(`🌐 Porta configurada: ${PORT}`);
 
 // Iniciar servidor
 console.log('🎯 Iniciando servidor Baileys...');
 import('./baileys_server_multitenant.js');
+
