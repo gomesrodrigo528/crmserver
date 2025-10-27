@@ -8,8 +8,7 @@ import {
     makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion,
-    makeInMemoryStore
+    fetchLatestBaileysVersion
 } from "@whiskeysockets/baileys";
 import pkg from 'pino';
 const { pino } = pkg;
