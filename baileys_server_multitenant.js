@@ -4,11 +4,28 @@
  * Gerencia múltiplas conexões WhatsApp simultaneamente
  */
 
-import makeWASocket, {
+import { 
+    makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    makeInMemoryStore
 } from "@whiskeysockets/baileys";
+import pkg from 'pino';
+const { pino } = pkg;
+
+// Configuração do logger
+const logger = pino({
+    level: 'debug',
+    transport: {
+        target: 'pino-pretty',
+        options: {
+            colorize: true,
+            translateTime: true,
+            ignore: 'pid,hostname',
+        },
+    },
+});
 import express from "express";
 import axios from "axios";
 import { Boom } from "@hapi/boom";
@@ -142,7 +159,7 @@ class WhatsAppTenant {
                 defaultQueryTimeoutMs: 30000,
                 keepAliveIntervalMs: 20000,
                 connectTimeoutMs: 60000,
-                logger: P({ level: 'debug' }), // Habilita logs detalhados
+                logger: logger, // Usa o logger configurado
                 // Configurações adicionais para melhorar a estabilidade
                 retryRequestDelayMs: 1000,
                 maxRetryCount: 5,
