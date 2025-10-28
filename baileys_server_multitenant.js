@@ -1219,8 +1219,18 @@ app.listen(PORT, async () => {
     console.log(`📱 Sistema Multi-Tenant inicializado!`);
     console.log(`🔄 Flask URL: ${FLASK_URL}`);
 
-    // Cria diretório de auth se não existir
-    
+    // Limpa todas as pastas de autenticação ao iniciar
+    try {
+        console.log('🧹 Limpando pastas de autenticação...');
+        await clearAllAuthFolders();
+        console.log('✅ Pastas de autenticação limpas com sucesso!');
+        
+        // Garante que o diretório de autenticação existe
+        await fs.mkdir(AUTH_DIR, { recursive: true });
+        console.log(`📂 Diretório de autenticação pronto: ${AUTH_DIR}`);
+    } catch (error) {
+        console.error('❌ Erro ao limpar pastas de autenticação:', error);
+    }
 });
 
 // Tratamento de erros não capturados
