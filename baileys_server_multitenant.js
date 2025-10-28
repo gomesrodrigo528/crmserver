@@ -235,76 +235,76 @@ class WhatsAppTenant {
     }
 
     async handleConnectionUpdate(update) {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
 
+        // Handle QR Code
         if (qr) {
-            console.log(`🔄 Atualização de conexão (${this.tenantId}):`, {
-                qr: qr ? 'QR Code recebido' : 'Sem QR',
-                isNewLogin: update.isNewLogin
-            });
-            
+            console.log(`📱 QR Code gerado para tenant ${this.tenantId} (válido por 20s)`);
             this.qrCode = qr;
             this.qrGeneratedAt = Date.now();
             
             // Clear any existing QR timer
             this.clearQRTimer();
             
-            // Schedule QR regeneration if not scanned within 20 seconds
-            this.qrTimer = setTimeout(() => {
-                if (!this.isConnected && this.qrCode === qr) {
-                    console.log(`⏳ QR Code expirado para tenant ${this.tenantId}, gerando novo...`);
-                    this.qrCode = null;
-                    this.reconnect('QR Code expirado');
+            // Set timeout to regenerate QR if not scanned
+            this.qrTimer = setTimeout(async () => {
+                if (!this.isConnected) {
+                    console.log(`🔄 QR Code expirado para tenant ${this.tenantId}, gerando novo...`);
+                    await this.disconnect(true); // Force disconnect and clear auth
+                    await this.initialize(); // Reinitialize connection
                 }
             }, this.qrRegenerationInterval);
             
-            console.log(`📱 QR Code gerado para tenant ${this.tenantId} (válido por 20s)\n${qr}`);
+            this.emit('qr', { tenantId: this.tenantId, qr });
+            return;
+        }
+
+        // Handle connection status changes
+        if (connection) {
+            console.log(`🔄 Atualização de conexão (${this.tenantId}):`, {
+                connection,
+                isNewLogin,
+                error: lastDisconnect?.error?.message
+            });
             
-            // Emit event with QR code
-            this.emit('qr', { 
-                tenantId: this.tenantId, 
-                qr,
-                expiresAt: Date.now() + this.qrRegenerationInterval
-            });
-        } else if (connection === 'close') {
-            this.isConnected = false;
-            this.qrCode = null;
-
-            const error = lastDisconnect?.error;
-            const statusCode = error?.output?.statusCode;
-            const isLogout = statusCode === DisconnectReason.loggedOut || statusCode === 401;
-            const shouldReconnect = !isLogout;
-
-            console.log(`❌ Tenant ${this.tenantId} desconectado:`, {
-                error: error?.message || 'Erro desconhecido',
-                code: statusCode,
-                shouldReconnect: shouldReconnect
-            });
-
-            // Limpa o socket atual
-            this.sock = null;
-
-            // Se foi logout, limpa a sessão
-            if (isLogout) {
-                console.log(`🚪 Tenant ${this.tenantId} deslogado pelo usuário`);
-                await this.cleanupSession();
-                return;
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.code;
+                const shouldReconnect = (statusCode !== 401 && statusCode !== '401');
+                
+                console.log(`❌ Tenant ${this.tenantId} desconectado:`, {
+                    error: lastDisconnect?.error?.message || 'Sem detalhes do erro',
+                    statusCode,
+                    shouldReconnect
+                });
+                
+                this.isConnected = false;
+                
+                if (shouldReconnect) {
+                    console.log(`🔄 Tentando reconectar tenant ${this.tenantId} em 2 segundos...`);
+                    // Add a delay before reconnecting to avoid rate limiting
+                    setTimeout(() => this.reconnect('Conexão fechada pelo servidor'), 2000);
+                } else {
+                    console.log(`❌ Autenticação falhou para o tenant ${this.tenantId}, removendo sessão...`);
+                    await this.disconnect(true); // Force remove auth
+                }
+            } 
+            else if (connection === 'open') {
+                console.log(`✅ Tenant ${this.tenantId} conectado com sucesso ao WhatsApp!`);
+                this.isConnected = true;
+                this.reconnectAttempts = 0;
+                this.qrCode = null;
+                this.clearQRTimer();
+                
+                // Save credentials when connection is successful
+                if (this.sock?.authState?.saveCreds) {
+                    await this.sock.authState.saveCreds();
+                }
+                
+                this.emit('connected', { tenantId: this.tenantId });
             }
-
-            // Se não deve reconectar, para aqui
-            if (!shouldReconnect) {
-                return;
+            else if (connection === 'connecting') {
+                console.log(`🔄 Conectando tenant ${this.tenantId}...`);
             }
-
-            // Agenda reconexão
-            this.reconnect('Conexão encerrada inesperadamente');
-
-        } else if (connection === 'open') {
-            console.log(`✅ Tenant ${this.tenantId} conectado ao WhatsApp!`);
-            this.isConnected = true;
-            this.reconnectAttempts = 0;
-            this.qrCode = null;
-            this.emit('connected', { tenantId: this.tenantId });
         }
     }
 
